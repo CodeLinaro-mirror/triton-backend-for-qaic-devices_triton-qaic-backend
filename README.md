@@ -17,17 +17,17 @@ The QAIC backend is designed to deploy inference execution on compiled pre-train
 * Run the docker build script with the specified configuration.
 
   ```bash
-  $ cd </path/to/apps-sdk>/tools/docker-build
-  $ python3 build_image.py --tag <sdk-version>-triton --log_level 2 --user_specification_file /opt/qti-aic/tools/docker-build/sample_user_specs/user_image_spec_triton_model_repo.json --apps-sdk /apps/sdk/path --platform-sdk /platform/sdk/path
+  $ cd </path/to/apps-sdk>/common/tools/docker-build
+
+  $ python3 build_image.py --image_name qaic-triton --tag <sdk-version> --log_level 2 --user_specification_file </path/to/apps-sdk>/common/tools/docker-build/sample_user_specs/user_image_spec_triton_model_repo.json --apps-sdk /apps/sdk/path.zip --platform-sdk /platform/sdk/path.zip
   ```
 
-  The build command above generates incremental docker images for triton with qaic backend support.
-* From the list of docker images, the relevant image would be of the format shown here -
+  The build command above generates incremental docker image for triton with qaic backend support in local docker repository.
 
   ```bash
-  $ docker image ls
-  REPOSITORY                                                                                                                      TAG                 IMAGE ID       CREATED         SIZE
-  qaic-x86_64-triton-release-py38-qaic_platform-qaic_apps-pybase-onnxruntime-triton-pytools-triton_model_repo               1.11.0.46-triton          a0968cf3711b   3 months ago    28.2GB
+    $ docker image ls
+    REPOSITORY   TAG                 IMAGE ID       CREATED         SIZE
+    qaic-triton  <sdk-version>       a0968cf3711b   3 days ago      27.3GB
   ```
 
 ### Option 2. Build backend library from source in Default Triton Container
