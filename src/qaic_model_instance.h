@@ -25,8 +25,13 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Changes from Qualcomm Innovation Center are provided under the following license:
-// Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+// Copyright (c) 2023,2026 Qualcomm Innovation Center, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
+
+#include "triton/backend/backend_common.h"
+#include "qaic_model_state.h"
+#include "QAicApi.hpp"
+namespace qaicrt = ::qaic::rt;
 
 namespace triton { namespace backend { namespace qaic {
 
@@ -47,6 +52,7 @@ class ModelInstanceState : public BackendModelInstance {
   ModelState* StateForModel() const { return model_state_; }
   // conversion method for string datatype from config file to triton datatypes
   TRITONSERVER_datatype_enum GetTritonDatatype(std::string d_type);
+  qaicrt::shInferenceSet GetInferenceSet() const { return inference_set_; }
 
  private:
   ModelInstanceState(
@@ -58,6 +64,8 @@ class ModelInstanceState : public BackendModelInstance {
   }
 
   ModelState* model_state_;
+  qaicrt::shInferenceSet inference_set_;
+  TRITONSERVER_Error* InitializeInferenceSet();
 };
 
 TRITONSERVER_Error*
@@ -67,6 +75,7 @@ ModelInstanceState::Create(
 {
   try {
     *state = new ModelInstanceState(model_state, triton_model_instance);
+    RETURN_IF_ERROR((*state)->InitializeInferenceSet());
   }
   catch (const BackendModelInstanceException& ex) {
     RETURN_ERROR_IF_TRUE(
@@ -76,6 +85,48 @@ ModelInstanceState::Create(
   }
   return nullptr;  // success
 }
+
+TRITONSERVER_Error*
+ModelInstanceState::InitializeInferenceSet()
+{
+  try {
+    this->inference_set_ = qaicrt::InferenceSet::Factory(
+      model_state_->GetContext(),
+      model_state_->GetQpc(),
+      model_state_->GetDeviceId(),
+      model_state_->GetSetSize(),
+      model_state_->GetActivations());
+
+    RETURN_ERROR_IF_FALSE(
+      (static_cast<bool>(this->inference_set_)), TRITONSERVER_ERROR_INTERNAL,
+      std::string("Invalid InferenceSet for model instance"));
+
+    // Log the actual device ID assigned to the instance
+    QAicProgramInfoV2 prog_info{};
+    QStatus info_status = this->inference_set_->getAicProgramInfoV2(prog_info);
+    if (info_status == QS_SUCCESS && prog_info.numQids > 0) {
+      std::string qid_list = "";
+      for (uint32_t i = 0; i < prog_info.numQids; ++i) {
+        if (i > 0) qid_list += ", ";
+        qid_list += std::to_string(prog_info.qid[i]);
+      }
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_INFO,
+          (std::string("ModelInstance initialized on QID(s): [") + qid_list + "]").c_str());
+    } else {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_INFO,
+          (std::string("ModelInstance initialized (device info unavailable)")).c_str());
+    }
+  }
+  catch (std::exception &e) {
+    return TRITONSERVER_ErrorNew(
+      TRITONSERVER_ERROR_INTERNAL,
+      (std::string("qaic backend instance exception:") + e.what()).c_str());
+  }
+  return nullptr; // success
+}
+
 
 TRITONSERVER_datatype_enum
 ModelInstanceState::GetTritonDatatype(std::string d_type)

@@ -25,7 +25,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Changes from Qualcomm Innovation Center are provided under the following license:
-// Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+// Copyright (c) 2023,2026 Qualcomm Innovation Center, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
 #include "triton/backend/backend_common.h"
@@ -430,7 +430,7 @@ TRITONBACKEND_ModelInstanceExecute(
         buffer_memory_type_id);
   }
 
-  status = (model_state->inference_set)->putCompleted(completed_inf_handle);
+  status = (instance_state->GetInferenceSet())->putCompleted(completed_inf_handle);
   if (status != QS_SUCCESS)
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO,
@@ -547,7 +547,7 @@ ModelInstanceState::ExecuteInference(
   QStatus status = QS_INVAL;
   qaicrt::shInferenceHandle submit_inf_handle;
 
-  status = ((this->model_state_)->inference_set)
+  status = (this->inference_set_)
                ->getAvailable(submit_inf_handle);  // Blocking call
   LOG_IF_FALSE_AND_RETURN(
       status == QS_SUCCESS, "Could not get free inference handle", status);
@@ -561,17 +561,17 @@ ModelInstanceState::ExecuteInference(
       status == QS_SUCCESS, "Could not set output buffers", status);
   uint32_t req_id = ModelState::GetUID();
 
-  status = ((this->model_state_)->inference_set)
+  status = (this->inference_set_)
                ->submit(submit_inf_handle, req_id);  // Non-Blocking call
   LOG_IF_FALSE_AND_RETURN(
       status == QS_SUCCESS, "Could not submit inference request", status);
 
-  status = ((this->model_state_)->inference_set)
+  status = (this->inference_set_)
                ->getCompletedId(completed_inf_handle, req_id);
   if (status == QS_TIMEDOUT) {
     LOG_MESSAGE(
       TRITONSERVER_LOG_INFO, (std::string("timeout occurred, ") + std::to_string(req_id) + " retrying...").c_str());
-    ((this->model_state_)->inference_set)->putCompleted(completed_inf_handle);
+    (this->inference_set_)->putCompleted(completed_inf_handle);
   }
 
   return status;

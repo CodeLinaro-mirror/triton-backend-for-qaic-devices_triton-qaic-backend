@@ -25,7 +25,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Changes from Qualcomm Innovation Center are provided under the following license:
-// Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+// Copyright (c) 2023,2026 Qualcomm Innovation Center, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
 #include "triton/backend/backend_model.h"
@@ -43,8 +43,6 @@ namespace config {
 constexpr const int default_set_size = 20;
 // activation denotes a runtime instance of model network, default is set to 1.
 constexpr const int default_activations = 1;
-// default device id is set -1,which invokes auto-device picker if no device-id is configured.
-constexpr const int default_device_id = -1;
 // default version number
 constexpr const int default_version = 1;
 }
@@ -117,11 +115,17 @@ ModelState::LoadModel()
   int device_id;
   int set_size;
   int no_of_activations;
+  bool device_id_specified = false;
   triton::common::TritonJson::Value params;
 
   if (this->ModelConfig().Find("parameters", &params)) {
-    THROW_IF_BACKEND_MODEL_ERROR(
-        TryParseModelStringParameter(params, "device_id", &device_id, config::default_device_id));
+    //Check if device_id parameter exists.
+    triton::common::TritonJson::Value device_param;
+    if (params.Find("device_id", &device_param)) {
+      THROW_IF_BACKEND_MODEL_ERROR(
+          TryParseModelStringParameter(params, "device_id", &device_id, 0));
+      device_id_specified = true;
+    }
     THROW_IF_BACKEND_MODEL_ERROR(
         TryParseModelStringParameter(params, "set_size", &set_size, config::default_set_size));
     THROW_IF_BACKEND_MODEL_ERROR(
@@ -149,33 +153,35 @@ ModelState::LoadModel()
       TRITONSERVER_LOG_INFO,
       (std::string("+----------------------------+").c_str()));
 
-  std::optional <QID> aic_device_id = device_id;
+  std::optional <QID> aic_device_id;
 
   // Initialize device id for auto-device picker in case default is selected/no device configured.
-  if (device_id == config::default_device_id)
-  {
-    aic_device_id = std::nullopt;
-    LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      (std::string("Auto device picking enabled")).c_str());
+  if (device_id_specified) {
+  aic_device_id = static_cast<QID>(device_id);
+  LOG_MESSAGE(
+    TRITONSERVER_LOG_INFO,
+    (std::string("Using device ID: ") + std::to_string(device_id)).c_str());
+  } else {
+  aic_device_id = std::nullopt; // Setting device_id to null which invokes auto-device picker
+  LOG_MESSAGE(
+    TRITONSERVER_LOG_INFO,
+    (std::string("Auto device picking enabled")).c_str());
   }
 
-  try {
+  try{
     this->qpc_ = qaicrt::Qpc::Factory(qpc_path);
     RETURN_ERROR_IF_FALSE(
-        (static_cast<bool>(this->qpc_)), TRITONSERVER_ERROR_INTERNAL,
-        std::string("Invalid qpc object"));
+      (static_cast<bool>(this->qpc_)), TRITONSERVER_ERROR_INTERNAL,
+      std::string("Invalid qpc object"));
 
-    qaicrt::shContext rt_context = qaicrt::Context::Factory();
+    this->rt_context_ = qaicrt::Context::Factory();
     RETURN_ERROR_IF_FALSE(
-        (static_cast<bool>(rt_context)), TRITONSERVER_ERROR_INTERNAL,
+        (static_cast<bool>(this->rt_context_)), TRITONSERVER_ERROR_INTERNAL,
         std::string("Invalid runtime context"));
 
-    this->inference_set = qaicrt::InferenceSet::Factory(
-        rt_context, this->qpc_, aic_device_id, set_size, no_of_activations);
-    RETURN_ERROR_IF_FALSE(
-        (static_cast<bool>(this->inference_set)), TRITONSERVER_ERROR_INTERNAL,
-        std::string("Invalid InferenceSet"));
+    this->set_size_ = set_size;
+    this->no_of_activations_ = no_of_activations;
+    this->device_id_ = aic_device_id;
   }
   catch (std::exception &e) {
     return TRITONSERVER_ErrorNew(
@@ -185,6 +191,7 @@ ModelState::LoadModel()
 
   return nullptr;
 }
+
 
 TRITONSERVER_Error*
 ModelState::PopulateQpcMappings()

@@ -25,8 +25,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Changes from Qualcomm Innovation Center are provided under the following license:
-// Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+// Copyright (c) 2023,2026 Qualcomm Innovation Center, Inc. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
+
+#ifndef TRITON_BACKEND_QAIC_MODEL_STATE_H_
+#define TRITON_BACKEND_QAIC_MODEL_STATE_H_
 
 #include <list>
 #include <vector>
@@ -68,7 +71,11 @@ class ModelState : public BackendModel {
   const std::list<ModelInputOutput>& GetConfigOutputs() { return config_outputs_; }
   const std::list<ModelInputOutput>& GetQpcInputs() { return qpc_inputs_; }
   const std::list<ModelInputOutput>& GetQpcOutputs() { return qpc_outputs_; }
-  qaicrt::shInferenceSet inference_set;
+  qaicrt::shQpc GetQpc() const { return qpc_; }
+  qaicrt::shContext GetContext() const { return rt_context_; }
+  int GetSetSize() const { return set_size_; }
+  int GetActivations() const { return no_of_activations_; }
+  std::optional<QID> GetDeviceId() const { return device_id_; }
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -94,6 +101,12 @@ class ModelState : public BackendModel {
   std::list<ModelInputOutput> qpc_outputs_;
   uint32_t num_nsp_;
   uint32_t batch_size_;
+  qaicrt::shContext rt_context_;
+  int set_size_;
+  int no_of_activations_;
+  std::optional<QID> device_id_;
 };
 
 }}}  // namespace triton::backend::qaic
+
+#endif  // TRITON_BACKEND_QAIC_MODEL_STATE_H_
