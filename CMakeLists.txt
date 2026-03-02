@@ -25,7 +25,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 # Changes from Qualcomm Innovation Center are provided under the following license:
-# Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+# Copyright (c) 2023,2026 Qualcomm Innovation Center, Inc. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 
 cmake_minimum_required(VERSION 3.17)
@@ -109,7 +109,7 @@ target_compile_features(triton-qaic-backend PRIVATE cxx_std_11)
 target_compile_options(
   triton-qaic-backend PRIVATE
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
-    -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror -std=c++17>
+    -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Wno-deprecated-declarations -Werror -std=c++17>
 )
 
 target_link_libraries(
