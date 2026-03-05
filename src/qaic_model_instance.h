@@ -89,6 +89,16 @@ ModelInstanceState::Create(
 TRITONSERVER_Error*
 ModelInstanceState::InitializeInferenceSet()
 {
+  // Get instance name for logging
+  const char* instance_name;
+  TRITONBACKEND_ModelInstanceName(TritonModelInstance(), &instance_name);
+
+  // Get model name
+  TRITONBACKEND_Model* model;
+  TRITONBACKEND_ModelInstanceModel(TritonModelInstance(), &model);
+  const char* model_name;
+  TRITONBACKEND_ModelName(model, &model_name);
+
   try {
     this->inference_set_ = qaicrt::InferenceSet::Factory(
       model_state_->GetContext(),
@@ -110,13 +120,18 @@ ModelInstanceState::InitializeInferenceSet()
         if (i > 0) qid_list += ", ";
         qid_list += std::to_string(prog_info.qid[i]);
       }
+
       LOG_MESSAGE(
           TRITONSERVER_LOG_INFO,
-          (std::string("ModelInstance initialized on QID(s): [") + qid_list + "]").c_str());
+          (std::string("Model '") + model_name +
+           "' Instance '" + instance_name +
+           "' initialized on QID(s): [" + qid_list + "]").c_str());
     } else {
       LOG_MESSAGE(
           TRITONSERVER_LOG_INFO,
-          (std::string("ModelInstance initialized (device info unavailable)")).c_str());
+          (std::string("Model '") + model_name +
+           "' Instance '" + instance_name +
+           "' initialized (device info unavailable)").c_str());
     }
   }
   catch (std::exception &e) {

@@ -140,9 +140,14 @@ ModelState::LoadModel()
   LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
       (std::string("+----------------------------+").c_str()));
-  LOG_MESSAGE(
+  if (device_id_specified) {
+      LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
-      (std::string(" device_id: ") + std::to_string(device_id)).c_str());
+      (std::string(" device_id: ") + std::to_string(device_id)).c_str());}
+  else {
+      LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string(" device_id: not specified (auto-device picking enabled)").c_str()));}
   LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
       (std::string(" set_size: ") + std::to_string(set_size)).c_str());
@@ -163,9 +168,6 @@ ModelState::LoadModel()
     (std::string("Using device ID: ") + std::to_string(device_id)).c_str());
   } else {
   aic_device_id = std::nullopt; // Setting device_id to null which invokes auto-device picker
-  LOG_MESSAGE(
-    TRITONSERVER_LOG_INFO,
-    (std::string("Auto device picking enabled")).c_str());
   }
 
   try{
