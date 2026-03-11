@@ -34,6 +34,7 @@
 namespace qaicrt = ::qaic::rt;
 
 namespace triton { namespace backend { namespace qaic {
+extern qaicrt::shContext global_rt_context;
 
 class ModelInstanceState : public BackendModelInstance {
  public:
@@ -101,7 +102,7 @@ ModelInstanceState::InitializeInferenceSet()
 
   try {
     this->inference_set_ = qaicrt::InferenceSet::Factory(
-      model_state_->GetContext(),
+      global_rt_context,
       model_state_->GetQpc(),
       model_state_->GetDeviceId(),
       model_state_->GetSetSize(),

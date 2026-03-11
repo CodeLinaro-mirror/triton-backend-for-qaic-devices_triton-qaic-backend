@@ -40,6 +40,7 @@
 namespace qaicrt = ::qaic::rt;
 
 namespace triton { namespace backend { namespace qaic {
+qaicrt::shContext global_rt_context;
 extern "C" {
 // Triton calls TRITONBACKEND_Initialize when a backend is loaded into
 // Triton to allow the backend to create and initialize any state that
@@ -100,6 +101,23 @@ TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
   RETURN_IF_ERROR(
       TRITONBACKEND_BackendSetState(backend, reinterpret_cast<void*>(state)));
 
+ // Initialize global QAIC context once for all models
+  try {
+    global_rt_context = qaicrt::Context::Factory();
+    if (!global_rt_context) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          "Failed to create global QAIC context");
+    }
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO,
+        "Global QAIC context initialized successfully");
+  }
+  catch (std::exception &e) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        (std::string("Failed to create QAIC context: ") + e.what()).c_str());
+  }
   return nullptr;  // success
 }
 

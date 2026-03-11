@@ -47,6 +47,7 @@ namespace qaicrt = ::qaic::rt;
   }
 
 namespace triton { namespace backend { namespace qaic {
+extern qaicrt::shContext global_rt_context;
 
 // Configuration for model input and output
 struct ModelInputOutput {

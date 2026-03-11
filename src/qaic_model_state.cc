@@ -176,7 +176,8 @@ ModelState::LoadModel()
       (static_cast<bool>(this->qpc_)), TRITONSERVER_ERROR_INTERNAL,
       std::string("Invalid qpc object"));
 
-    this->rt_context_ = qaicrt::Context::Factory();
+    this->rt_context_ = global_rt_context;
+
     RETURN_ERROR_IF_FALSE(
         (static_cast<bool>(this->rt_context_)), TRITONSERVER_ERROR_INTERNAL,
         std::string("Invalid runtime context"));
