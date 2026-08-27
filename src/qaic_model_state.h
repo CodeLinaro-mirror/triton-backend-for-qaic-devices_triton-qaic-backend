@@ -78,6 +78,20 @@ class ModelState : public BackendModel {
   int GetActivations() const { return no_of_activations_; }
   std::optional<QID> GetDeviceId() const { return device_id_; }
 
+  // Specialization Query Method
+  bool HasSpecializations() const { return has_specializations_; }
+  const std::vector<uint32_t>& GetAvailableBatchSizes() const { return available_batch_sizes_; }
+  TRITONSERVER_Error* SelectSpecialization(
+      uint32_t requested_batch_size,
+      size_t& spec_index,
+      uint32_t& actual_batch_size) const;
+
+  // Get specialized buffer size
+  size_t GetSpecializedBufferSize(size_t spec_index, size_t buffer_index) const;
+
+  // Get specialized dimensions
+  std::vector<std::pair<uint32_t, std::vector<uint32_t>>> GetSpecializedDimensions(size_t spec_index) const;
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   // Map config json into ModelInputOutput
@@ -91,6 +105,9 @@ class ModelState : public BackendModel {
 
   TRITONSERVER_Error* AutoCompleteConfig();
   TRITONSERVER_Error* AutoCompleteIO(const char* key);
+
+  int GetMaxBatchSizeFromBufferMappings(
+      const qaicrt::v2::BufferMappings& buffer_mappings) const;
 
   bool shape_initialized_;
   std::vector<int64_t> nb_shape_;
@@ -106,6 +123,12 @@ class ModelState : public BackendModel {
   int set_size_;
   int no_of_activations_;
   std::optional<QID> device_id_;
+
+  // Network Specialization Support
+  std::vector<uint32_t> available_batch_sizes_;
+  std::map<uint32_t, size_t> batch_size_to_spec_index_;
+  std::vector<qaicrt::v2::BufferMappings> all_specializations_;
+  bool has_specializations_;
 };
 
 }}}  // namespace triton::backend::qaic

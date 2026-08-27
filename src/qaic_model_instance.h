@@ -47,7 +47,7 @@ class ModelInstanceState : public BackendModelInstance {
 
   QStatus ExecuteInference(
       std::vector<QBuffer>& input_buffers, std::vector<QBuffer>& output_buffers,
-      ::qaic::rt::shInferenceHandle& completed_inf_handle);
+      ::qaic::rt::shInferenceHandle& completed_inf_handle, size_t spec_index);
 
   // Get the state of the model that corresponds to this instance.
   ModelState* StateForModel() const { return model_state_; }

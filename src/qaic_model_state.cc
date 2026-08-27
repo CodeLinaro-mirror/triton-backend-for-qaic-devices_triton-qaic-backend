@@ -80,7 +80,9 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
 }
 
 ModelState::ModelState(TRITONBACKEND_Model* triton_model)
-    : BackendModel(triton_model), shape_initialized_(false)
+    : BackendModel(triton_model),
+      shape_initialized_(false),
+      has_specializations_(false)
 {
   THROW_IF_BACKEND_MODEL_ERROR(LoadModel());
   THROW_IF_BACKEND_MODEL_ERROR(PopulateConfigMappings());
@@ -202,6 +204,69 @@ ModelState::PopulateQpcMappings()
   qaicrt::shQpcInfo info = (this->qpc_)->getInfo();
   this->batch_size_ = info->program[0].batchSize;
   this->num_nsp_ = info->program[0].numCores;
+
+  // Extract network specializations
+  qaicrt::v2::BufferMappings buffer_mappings_v2;
+  buffer_mappings_v2 = (this->qpc_)->getBufferMappingsV2();
+
+  // Check for multiple specializations
+  if (!buffer_mappings_v2.empty() &&
+      buffer_mappings_v2[0].ioShapes.size() > 1) {
+    this->has_specializations_ = true;
+    size_t num_specs = buffer_mappings_v2[0].ioShapes.size();
+
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("+----------------------------+")).c_str());
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("| Network Specializations    |")).c_str());
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("+----------------------------+")).c_str());
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string(" Found ") + std::to_string(num_specs) +
+         " specializations").c_str());
+
+    // Extract batch sizes and log dimensions for each specialization
+    std::string batch_sizes_str;
+    for (size_t i = 0; i < num_specs; i++) {
+      uint32_t batch_size = buffer_mappings_v2[0].ioShapes[i].dims[0];
+      this->available_batch_sizes_.push_back(batch_size);
+      this->batch_size_to_spec_index_[batch_size] = i;
+
+      if (i > 0) batch_sizes_str += ", ";
+      batch_sizes_str += std::to_string(batch_size);
+
+      LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+          (std::string(" Specialization [") + std::to_string(i) +
+           "] batch_size=" + std::to_string(batch_size)).c_str());
+
+      for (size_t buf_idx = 0; buf_idx < buffer_mappings_v2.size(); buf_idx++) {
+        const auto& mapping = buffer_mappings_v2[buf_idx];
+        std::string io_type_str = (mapping.bufferMapping.ioType == BUFFER_IO_TYPE_INPUT) ? "INPUT " : "OUTPUT";
+        std::string dims_str = "[";
+        for (size_t d = 0; d < mapping.ioShapes[i].dims.size(); d++) {
+          if (d > 0) dims_str += ", ";
+          dims_str += std::to_string(mapping.ioShapes[i].dims[d]);
+        }
+        dims_str += "]";
+        LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+            (std::string("   ") + io_type_str + " '" + mapping.bufferMapping.bufferName +
+             "': " + dims_str).c_str());
+      }
+    }
+
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string(" Available batch sizes: [") + batch_sizes_str + "]").c_str());
+
+    // Store all specializations
+    this->all_specializations_.push_back(buffer_mappings_v2);
+
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("+----------------------------+")).c_str());
+  } else {
+    this->has_specializations_ = false;
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        "No network specializations found - using default batch size");
+  }
 
   LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
@@ -381,6 +446,20 @@ ModelState::AutoCompleteConfig()
     return nullptr;
   }
 
+  // Set max_batch_size before calling AutoCompleteIO
+  qaicrt::v2::BufferMappings buffer_mappings = this->qpc_->getBufferMappingsV2();
+  int max_bs = GetMaxBatchSizeFromBufferMappings(buffer_mappings);
+  if (max_bs > 0 && max_bs != MaxBatchSize()) {
+    SetMaxBatchSize(max_bs);
+    // update the JSON config
+    triton::common::TritonJson::Value max_batch_size_value;
+    ModelConfig().Find("max_batch_size", &max_batch_size_value);
+    max_batch_size_value.SetInt(max_bs);
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("Auto-completed max_batch_size=") +
+         std::to_string(max_bs) + " (maximum across all specializations, overriding config value)").c_str());
+  }
+
   if (input_count == 0){
     RETURN_IF_ERROR(AutoCompleteIO("input"));
   }
@@ -408,8 +487,13 @@ ModelState::AutoCompleteIO(const char* keys){
   bool found_ios = ModelConfig().Find(keys, &existing_ios);
   // Setting Max Batch Size
   if (MaxBatchSize() == 0){
-    const int max_bs = buffer_mappings[0].ioShapes[0].dims[0];
-    SetMaxBatchSize(max_bs);
+    int max_bs = GetMaxBatchSizeFromBufferMappings(buffer_mappings);
+    if (max_bs > 0) {
+      SetMaxBatchSize(max_bs);
+      LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+          (std::string("Auto-completed max_batch_size=") +
+           std::to_string(max_bs) + " (maximum across all specializations)").c_str());
+    }
   }
   triton::common::TritonJson::Value ios(
       ModelConfig(), triton::common::TritonJson::ValueType::ARRAY);
@@ -429,7 +513,10 @@ ModelState::AutoCompleteIO(const char* keys){
         RETURN_IF_ERROR(io.AddString("data_type", QAicBufferDataTypeToModelConfigDataType(m.bufferMapping.dataType)));
         triton::common::TritonJson::Value dims(
             ModelConfig(), triton::common::TritonJson::ValueType::ARRAY);
-        for (size_t i = 0; i < m.ioShapes[0].dims.size();i++) {
+        // Skip the first dimension (batch dimension) for Triton config
+        // Triton expects dims without the batch dimension
+        // Standard practice for all Triton backends
+        for (size_t i = 1; i < m.ioShapes[0].dims.size(); i++) {
           RETURN_IF_ERROR(dims.AppendInt(m.ioShapes[0].dims[i]));
         }
         RETURN_IF_ERROR(io.Add("dims", std::move(dims)));
@@ -444,6 +531,176 @@ ModelState::AutoCompleteIO(const char* keys){
   }
 
   return nullptr;
+}
+
+// Get max batch size from buffer mappings
+int ModelState::GetMaxBatchSizeFromBufferMappings(
+    const qaicrt::v2::BufferMappings& buffer_mappings) const {
+  int max_bs = 0;
+  // Find first input buffer and check all its specializations
+  for (const auto& mapping : buffer_mappings) {
+    if (mapping.bufferMapping.ioType == BUFFER_IO_TYPE_INPUT) {
+      for (const auto& io_shape : mapping.ioShapes) {
+        if (!io_shape.dims.empty()) {
+          int batch_size = io_shape.dims[0];
+          if (batch_size > max_bs) {
+            max_bs = batch_size;
+          }
+        }
+      }
+      // Only need to check first input buffer to get max batch size
+      // batch dimension for batched models, or first data dimension for non-batched models
+      break;
+    }
+  }
+  return max_bs;
+}
+
+// Function to get element size from data type
+static uint32_t GetElementSizeFromDataType(QAicBufferDataTypeEnum_t dataType) {
+  switch (dataType) {
+    case BUFFER_DATA_TYPE_FLOAT:      // 32-bit float
+    case BUFFER_DATA_TYPE_INT32Q:     // 32-bit quantized
+    case BUFFER_DATA_TYPE_INT32I:     // 32-bit index
+      return 4;
+    case BUFFER_DATA_TYPE_FLOAT16:    // 16-bit float
+    case BUFFER_DATA_TYPE_INT16Q:     // 16-bit quantized
+    case BUFFER_DATA_TYPE_BFLOAT16:   // 16-bit bfloat
+      return 2;
+    case BUFFER_DATA_TYPE_INT8Q:      // 8-bit quantized
+    case BUFFER_DATA_TYPE_UINT8Q:     // unsigned 8-bit quantized
+    case BUFFER_DATA_TYPE_INT8:       // 8-bit
+    case BUFFER_DATA_TYPE_UINT8:      // unsigned 8-bit
+      return 1;
+    case BUFFER_DATA_TYPE_INT64I:     // 64-bit index
+    case BUFFER_DATA_TYPE_FLOAT64C:   // 64-bit complex float
+      return 8;
+    default:
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+          (std::string("Unknown data type: ") + std::to_string(dataType)).c_str());
+      return 4;  // Default to 4 bytes (FP32) which prevents failure while still alerting the problem via logs
+  }
+}
+
+// Get specialized buffer size for a given specialization
+size_t ModelState::GetSpecializedBufferSize(size_t spec_index, size_t buffer_index) const {
+  if (!has_specializations_ || all_specializations_.empty()) {
+    if (buffer_index < qpc_inputs_.size()) {
+      auto it = qpc_inputs_.begin();
+      std::advance(it, buffer_index);
+      return it->size;
+    } else {
+      size_t output_idx = buffer_index - qpc_inputs_.size();
+      if (output_idx >= qpc_outputs_.size()) {
+        LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+            (std::string("Output buffer index ") + std::to_string(output_idx) +
+             " out of range (total outputs: " + std::to_string(qpc_outputs_.size()) + ")").c_str());
+        return 0;
+      }
+      auto it = qpc_outputs_.begin();
+      std::advance(it, output_idx);
+      return it->size;
+    }
+  }
+
+  const auto& buffer_mappings = all_specializations_[0];
+
+  if (buffer_index >= buffer_mappings.size()) {
+    LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+        (std::string("Buffer index ") + std::to_string(buffer_index) +
+         " out of range").c_str());
+    return 0;
+  }
+
+  const auto& mapping = buffer_mappings[buffer_index];
+  if (spec_index >= mapping.ioShapes.size()) {
+    LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+        (std::string("Specialization index ") + std::to_string(spec_index) +
+         " out of range").c_str());
+    return 0;
+  }
+
+  const auto& io_shape = mapping.ioShapes[spec_index];
+  size_t total_elements = 1;
+  for (size_t i = 0; i < io_shape.dims.size(); i++) {
+    total_elements *= io_shape.dims[i];
+  }
+
+  // Get element size and multiply to get total bytes
+  uint32_t element_size = GetElementSizeFromDataType(io_shape.dataType);
+  return total_elements * element_size;
+}
+
+// Get specialized dimensions for all buffers
+std::vector<std::pair<uint32_t, std::vector<uint32_t>>>
+ModelState::GetSpecializedDimensions(size_t spec_index) const {
+  std::vector<std::pair<uint32_t, std::vector<uint32_t>>> buffer_dims;
+
+  if (!has_specializations_ || all_specializations_.empty()) {
+    return buffer_dims;
+  }
+
+  const auto& buffer_mappings = all_specializations_[0];
+
+  for (size_t buf_idx = 0; buf_idx < buffer_mappings.size(); buf_idx++) {
+    const auto& mapping = buffer_mappings[buf_idx];
+
+    if (spec_index >= mapping.ioShapes.size()) {
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+          (std::string("Specialization index ") + std::to_string(spec_index) +
+           " out of range for buffer " + std::to_string(buf_idx)).c_str());
+      continue;
+    }
+
+    const auto& io_shape = mapping.ioShapes[spec_index];
+
+    uint32_t element_size = GetElementSizeFromDataType(io_shape.dataType);
+
+    // Get dimensions
+    std::vector<uint32_t> dims;
+    for (const auto& dim : io_shape.dims) {
+      dims.push_back(static_cast<uint32_t>(dim));
+    }
+
+    buffer_dims.push_back(std::make_pair(element_size, dims));
+  }
+
+  return buffer_dims;
+}
+
+// Specialization Selection Method
+TRITONSERVER_Error* ModelState::SelectSpecialization(
+    uint32_t requested_batch_size,
+    size_t& spec_index,
+    uint32_t& actual_batch_size) const {
+
+  if (!has_specializations_) {
+    // No specializations, use default
+    spec_index = 0;
+    actual_batch_size = requested_batch_size;
+    return nullptr;
+  }
+
+  // Check for exact match
+  auto it = batch_size_to_spec_index_.find(requested_batch_size);
+  if (it != batch_size_to_spec_index_.end()) {
+    spec_index = it->second;
+    actual_batch_size = requested_batch_size;
+    return nullptr;
+  }
+
+  // No exact match - return error
+  std::string available_sizes;
+  for (size_t i = 0; i < available_batch_sizes_.size(); i++) {
+    if (i > 0) available_sizes += ", ";
+    available_sizes += std::to_string(available_batch_sizes_[i]);
+  }
+
+  return TRITONSERVER_ErrorNew(
+      TRITONSERVER_ERROR_INVALID_ARG,
+      (std::string("Requested batch size ") +
+       std::to_string(requested_batch_size) +
+       " not supported. Available: [" + available_sizes + "]").c_str());
 }
 
 }}}  // namespace triton::backend::qaic

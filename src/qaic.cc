@@ -288,6 +288,82 @@ TRITONBACKEND_ModelInstanceExecute(
     responses.push_back(response);
   }
 
+  // Determine batch size and select specialization
+  size_t total_batch_size = 0;
+  bool supports_first_dim_batching;
+  RESPOND_ALL_AND_SET_NULL_IF_ERROR(
+      responses, request_count,
+      model_state->SupportsFirstDimBatching(&supports_first_dim_batching));
+
+  if (!supports_first_dim_batching) {
+    total_batch_size = request_count;
+  } else {
+    for (uint32_t r = 0; r < request_count; ++r) {
+      TRITONBACKEND_Input* input = nullptr;
+      RESPOND_ALL_AND_SET_NULL_IF_ERROR(
+          responses, request_count,
+          TRITONBACKEND_RequestInputByIndex(requests[r], 0, &input));
+      if (input != nullptr) {
+        const int64_t* shape = nullptr;
+        RESPOND_ALL_AND_SET_NULL_IF_ERROR(
+            responses, request_count,
+            TRITONBACKEND_InputProperties(
+                input, nullptr, nullptr, &shape, nullptr, nullptr, nullptr));
+        if (shape != nullptr) {
+          total_batch_size += shape[0];
+        }
+      }
+    }
+  }
+
+  // Select appropriate specialization
+  size_t spec_index = 0;
+  uint32_t actual_batch_size = total_batch_size;
+
+  if (model_state->HasSpecializations()) {
+    TRITONSERVER_Error* spec_err = model_state->SelectSpecialization(
+        total_batch_size, spec_index, actual_batch_size);
+    if (spec_err != nullptr) {
+      // Send error response to all requests
+      for (auto& response : responses) {
+        if (response != nullptr) {
+          LOG_IF_ERROR(
+              TRITONBACKEND_ResponseSend(
+                  response, TRITONSERVER_RESPONSE_COMPLETE_FINAL, spec_err),
+              "failed sending error response");
+          response = nullptr;
+        }
+      }
+      TRITONSERVER_ErrorDelete(spec_err);
+
+      // Release all requests
+      for (uint32_t r = 0; r < request_count; ++r) {
+        LOG_IF_ERROR(
+            TRITONBACKEND_RequestRelease(
+                requests[r], TRITONSERVER_REQUEST_RELEASE_ALL),
+            "failed releasing request");
+      }
+      return nullptr;
+    }
+
+    // Log selected specialization and its dimensions
+    auto buffer_dims = model_state->GetSpecializedDimensions(spec_index);
+    LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+        (std::string("Using specialization [") + std::to_string(spec_index) +
+         "] for batch_size=" + std::to_string(total_batch_size)).c_str());
+
+    for (size_t i = 0; i < buffer_dims.size(); i++) {
+      std::string dims_str = "[";
+      for (size_t d = 0; d < buffer_dims[i].second.size(); d++) {
+        if (d > 0) dims_str += ", ";
+        dims_str += std::to_string(buffer_dims[i].second[d]);
+      }
+      dims_str += "]";
+      LOG_MESSAGE(TRITONSERVER_LOG_INFO,
+          (std::string("  Buffer[") + std::to_string(i) + "]: " + dims_str).c_str());
+    }
+  }
+
   // At this point, the backend takes ownership of 'requests', which
   // means that it is responsible for sending a response for every
   // request. From here, even if something goes wrong in processing,
@@ -344,6 +420,7 @@ TRITONBACKEND_ModelInstanceExecute(
   std::vector<QBuffer> input_buffers;
   TRITONSERVER_MemoryType buffer_memory_type;
   int64_t buffer_memory_type_id;
+  size_t buffer_index = 0;
   for (auto const& input : model_state->GetQpcInputs()) {
     const char* buffer;
     size_t buffer_byte_size;
@@ -355,20 +432,71 @@ TRITONBACKEND_ModelInstanceExecute(
             0 /* existing_buffer_byte_size */, allowed_input_types, &buffer,
             &buffer_byte_size, &buffer_memory_type, &buffer_memory_type_id));
 
+    // Get buffer size
+    size_t actual_buffer_bytes;
+    if (model_state->HasSpecializations()) {
+      actual_buffer_bytes = model_state->GetSpecializedBufferSize(spec_index, buffer_index);
+    } else {
+      actual_buffer_bytes = input.size;
+    }
+
     QBuffer buf;
-    buf.size = input.size;
-    buf.buf = new(std::nothrow)uint8_t[input.size];
-    memcpy(buf.buf, buffer, buffer_byte_size);
+    buf.size = actual_buffer_bytes;
+    buf.type = QBUFFER_TYPE_HEAP;
+    buf.buf = new(std::nothrow)uint8_t[actual_buffer_bytes];
+    if (buf.buf == nullptr) {
+      // Clean up previously allocated input buffers
+      for (auto& prev_buf : input_buffers) {
+        delete[] prev_buf.buf;
+      }
+      RESPOND_ALL_AND_SET_NULL_IF_ERROR(
+          responses, request_count,
+          TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_INTERNAL,
+              "Failed to allocate input buffer"));
+      return nullptr;
+    }
+
+    memcpy(buf.buf, buffer, std::min(buffer_byte_size, actual_buffer_bytes));
+    if (actual_buffer_bytes > buffer_byte_size) {
+      memset(buf.buf + buffer_byte_size, 0, actual_buffer_bytes - buffer_byte_size);
+    }
+
     input_buffers.push_back(buf);
+    buffer_index++;
   }
 
   // populate output buffers
   std::vector<QBuffer> output_buffers;
   for (auto const& output : model_state->GetQpcOutputs()) {
+    // Get buffer size
+    size_t actual_buffer_bytes;
+    if (model_state->HasSpecializations()) {
+      actual_buffer_bytes = model_state->GetSpecializedBufferSize(spec_index, buffer_index);
+    } else {
+      actual_buffer_bytes = output.size;
+    }
+
     QBuffer buf;
-    buf.size = output.size;
-    buf.buf = new(std::nothrow)uint8_t[output.size];
+    buf.size = actual_buffer_bytes;
+    buf.type = QBUFFER_TYPE_HEAP;
+    buf.buf = new(std::nothrow)uint8_t[actual_buffer_bytes];
+    if (buf.buf == nullptr) {
+      // Clean up all previously allocated buffers
+      for (auto& prev_buf : input_buffers) {
+        delete[] prev_buf.buf;
+      }
+      for (auto& prev_buf : output_buffers) {
+        delete[] prev_buf.buf;
+      }
+      RESPOND_ALL_AND_SET_NULL_IF_ERROR(
+          responses, request_count,
+          TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_INTERNAL,
+              "Failed to allocate output buffer"));
+      return nullptr;
+    }
+
     output_buffers.push_back(buf);
+    buffer_index++;
   }
 
   // Finalize the collector. If 'true' is returned, 'input_buffer'
@@ -398,17 +526,12 @@ TRITONBACKEND_ModelInstanceExecute(
   while (status != QS_SUCCESS) {
     completed_inf_handle = NULL;
     status = instance_state->ExecuteInference(
-        input_buffers, output_buffers, completed_inf_handle);
+        input_buffers, output_buffers, completed_inf_handle, spec_index);
   }
   //-------------------------------------------------------------------------------
 
   uint64_t compute_end_ns = 0;
   SET_TIMESTAMP(compute_end_ns);
-
-  bool supports_first_dim_batching;
-  RESPOND_ALL_AND_SET_NULL_IF_ERROR(
-      responses, request_count,
-      model_state->SupportsFirstDimBatching(&supports_first_dim_batching));
 
   std::vector<int64_t> tensor_shape;
   RESPOND_ALL_AND_SET_NULL_IF_ERROR(
@@ -496,7 +619,7 @@ TRITONBACKEND_ModelInstanceExecute(
   // requests. This is not necessarily just the number of requests,
   // because if the model supports batching then any request can be a
   // batched request itself.
-  size_t total_batch_size = 0;
+  total_batch_size = 0;
   if (!supports_first_dim_batching) {
     total_batch_size = request_count;
   } else {
@@ -560,7 +683,7 @@ TRITONBACKEND_ModelInstanceExecute(
 QStatus
 ModelInstanceState::ExecuteInference(
     std::vector<QBuffer>& input_buffers, std::vector<QBuffer>& output_buffers,
-    qaicrt::shInferenceHandle& completed_inf_handle)
+    qaicrt::shInferenceHandle& completed_inf_handle, size_t spec_index)
 {
   QStatus status = QS_INVAL;
   qaicrt::shInferenceHandle submit_inf_handle;
@@ -569,6 +692,12 @@ ModelInstanceState::ExecuteInference(
                ->getAvailable(submit_inf_handle);  // Blocking call
   LOG_IF_FALSE_AND_RETURN(
       status == QS_SUCCESS, "Could not get free inference handle", status);
+
+  // Set buffer dimensions for the selected specialization
+  if (model_state_->HasSpecializations()) {
+    auto buffer_dims = model_state_->GetSpecializedDimensions(spec_index);
+    submit_inf_handle->setBufferDimensions(buffer_dims);
+  }
 
   status = submit_inf_handle->setInputBuffers(input_buffers);
   LOG_IF_FALSE_AND_RETURN(
