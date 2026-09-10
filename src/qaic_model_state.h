@@ -76,7 +76,7 @@ class ModelState : public BackendModel {
   qaicrt::shContext GetContext() const { return rt_context_; }
   int GetSetSize() const { return set_size_; }
   int GetActivations() const { return no_of_activations_; }
-  std::optional<QID> GetDeviceId() const { return device_id_; }
+  const std::optional<std::string>& GetDeviceId() const { return device_id_; }
 
   // Specialization Query Method
   bool HasSpecializations() const { return has_specializations_; }
@@ -122,7 +122,7 @@ class ModelState : public BackendModel {
   qaicrt::shContext rt_context_;
   int set_size_;
   int no_of_activations_;
-  std::optional<QID> device_id_;
+  std::optional<std::string> device_id_;
 
   // Network Specialization Support
   std::vector<uint32_t> available_batch_sizes_;

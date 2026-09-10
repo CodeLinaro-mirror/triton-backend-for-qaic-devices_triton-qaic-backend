@@ -101,18 +101,29 @@ ModelInstanceState::InitializeInferenceSet()
   TRITONBACKEND_ModelName(model, &model_name);
 
   try {
+    // Create InferenceSetProperties and set device mapping
+    qaicrt::shInferenceSetProperties properties =
+      qaicrt::InferenceSetProperties::makeDefault();
+
+    std::string requested_device_mapping = "auto";
+    if (model_state_->GetDeviceId().has_value()) {
+      requested_device_mapping = model_state_->GetDeviceId().value();
+      properties->programProperties.devMapping = requested_device_mapping.c_str();
+    }
+
     this->inference_set_ = qaicrt::InferenceSet::Factory(
       global_rt_context,
       model_state_->GetQpc(),
-      model_state_->GetDeviceId(),
+      std::nullopt,
       model_state_->GetSetSize(),
-      model_state_->GetActivations());
+      model_state_->GetActivations(),
+      properties);
 
     RETURN_ERROR_IF_FALSE(
       (static_cast<bool>(this->inference_set_)), TRITONSERVER_ERROR_INTERNAL,
       std::string("Invalid InferenceSet for model instance"));
 
-    // Log the actual device ID assigned to the instance
+    // Log the actual device ID assigned to the instance after initialization
     QAicProgramInfoV2 prog_info{};
     QStatus info_status = this->inference_set_->getAicProgramInfoV2(prog_info);
     if (info_status == QS_SUCCESS && prog_info.numQids > 0) {
@@ -126,13 +137,15 @@ ModelInstanceState::InitializeInferenceSet()
           TRITONSERVER_LOG_INFO,
           (std::string("Model '") + model_name +
            "' Instance '" + instance_name +
-           "' initialized on QID(s): [" + qid_list + "]").c_str());
+           "' initialized on QID(s): [" + qid_list + "]" +
+           " (requested device mapping: " + requested_device_mapping + ")").c_str());
     } else {
       LOG_MESSAGE(
           TRITONSERVER_LOG_INFO,
           (std::string("Model '") + model_name +
            "' Instance '" + instance_name +
-           "' initialized (device info unavailable)").c_str());
+           "' initialized (device info unavailable, requested device mapping: " +
+           requested_device_mapping + ")").c_str());
     }
   }
   catch (std::exception &e) {

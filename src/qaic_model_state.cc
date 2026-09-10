@@ -114,7 +114,7 @@ ModelState::LoadModel()
       (std::string(" Using qpc at location: ") + std::string(qpc_path)).c_str());
 
   // Parse backend parameters
-  int device_id;
+  std::string device_id_str;
   int set_size;
   int no_of_activations;
   bool device_id_specified = false;
@@ -124,8 +124,7 @@ ModelState::LoadModel()
     //Check if device_id parameter exists.
     triton::common::TritonJson::Value device_param;
     if (params.Find("device_id", &device_param)) {
-      THROW_IF_BACKEND_MODEL_ERROR(
-          TryParseModelStringParameter(params, "device_id", &device_id, 0));
+      THROW_IF_BACKEND_MODEL_ERROR(device_param.MemberAsString("string_value", &device_id_str));
       device_id_specified = true;
     }
     THROW_IF_BACKEND_MODEL_ERROR(
@@ -145,7 +144,7 @@ ModelState::LoadModel()
   if (device_id_specified) {
       LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
-      (std::string(" device_id: ") + std::to_string(device_id)).c_str());}
+      (std::string(" device_id: ") + device_id_str).c_str());}
   else {
       LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
@@ -160,14 +159,14 @@ ModelState::LoadModel()
       TRITONSERVER_LOG_INFO,
       (std::string("+----------------------------+").c_str()));
 
-  std::optional <QID> aic_device_id;
+  std::optional<std::string> aic_device_id;
 
   // Initialize device id for auto-device picker in case default is selected/no device configured.
   if (device_id_specified) {
-  aic_device_id = static_cast<QID>(device_id);
+  aic_device_id = device_id_str;
   LOG_MESSAGE(
     TRITONSERVER_LOG_INFO,
-    (std::string("Using device ID: ") + std::to_string(device_id)).c_str());
+    (std::string("Using device ID: ") + device_id_str).c_str());
   } else {
   aic_device_id = std::nullopt; // Setting device_id to null which invokes auto-device picker
   }
